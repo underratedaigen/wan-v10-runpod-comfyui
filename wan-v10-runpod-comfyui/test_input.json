@@ -1,0 +1,15 @@
+{
+  "input": {
+    "prompt": "A cinematic slow-motion close-up of the subject turning toward the camera, realistic motion, wet skin, subtle pool reflections, shallow depth of field.",
+    "image_url": "https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/yarn-art-pikachu.png",
+    "resolution_preset": "480p",
+    "num_frames": 81,
+    "fps": 16,
+    "steps": 4,
+    "cfg": 1.0,
+    "sampler_name": "euler_ancestral",
+    "scheduler": "beta",
+    "shift": 5.0,
+    "seed": 42
+  }
+}
