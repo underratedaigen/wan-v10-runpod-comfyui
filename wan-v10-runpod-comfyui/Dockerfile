@@ -17,7 +17,9 @@ ENV PYTHONUNBUFFERED=1 \
     WAN_DEFAULT_FILENAME_PREFIX=wan-v10/wan_i2v \
     WAN_SKIP_MODEL_DOWNLOAD=false \
     COMFY_HISTORY_TIMEOUT_S=3600 \
-    COMFY_POLL_INTERVAL_S=5
+    COMFY_POLL_INTERVAL_S=5 \
+    COMFY_STARTUP_TIMEOUT_S=300 \
+    COMFY_STARTUP_POLL_INTERVAL_S=2
 
 COPY custom_start.sh /custom_start.sh
 COPY bootstrap_models.py /bootstrap_models.py

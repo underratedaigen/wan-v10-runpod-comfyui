@@ -23,6 +23,8 @@ LOGGER = logging.getLogger("wan-v10-worker")
 COMFY_HOST = os.environ.get("COMFY_HOST", "127.0.0.1:8188")
 COMFY_HISTORY_TIMEOUT_S = int(os.environ.get("COMFY_HISTORY_TIMEOUT_S", "3600"))
 COMFY_POLL_INTERVAL_S = int(os.environ.get("COMFY_POLL_INTERVAL_S", "5"))
+COMFY_STARTUP_TIMEOUT_S = int(os.environ.get("COMFY_STARTUP_TIMEOUT_S", "300"))
+COMFY_STARTUP_POLL_INTERVAL_S = float(os.environ.get("COMFY_STARTUP_POLL_INTERVAL_S", "2"))
 WORKFLOW_TEMPLATE = Path("/workflow_templates/wan_v10_i2v.json")
 COMFY_OUTPUT_DIR = Path("/comfyui/output")
 COMFY_TEMP_DIR = Path("/comfyui/temp")
@@ -38,6 +40,32 @@ def comfy_url(path: str) -> str:
 def check_server() -> None:
     response = requests.get(comfy_url("/"), timeout=10)
     response.raise_for_status()
+
+
+def wait_for_server() -> None:
+    start = time.time()
+    last_error: Exception | None = None
+
+    while True:
+        try:
+            check_server()
+            elapsed = time.time() - start
+            LOGGER.info("ComfyUI is ready after %.1fs", elapsed)
+            return
+        except requests.RequestException as exc:
+            last_error = exc
+            elapsed = time.time() - start
+            if elapsed >= COMFY_STARTUP_TIMEOUT_S:
+                raise TimeoutError(
+                    f"Timed out waiting for ComfyUI after {COMFY_STARTUP_TIMEOUT_S}s."
+                ) from exc
+
+            LOGGER.info(
+                "Waiting for ComfyUI to start on %s... %.1fs elapsed",
+                COMFY_HOST,
+                elapsed,
+            )
+            time.sleep(COMFY_STARTUP_POLL_INTERVAL_S)
 
 
 def strip_data_uri(data: str) -> str:
@@ -223,7 +251,7 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
     job_input = validate_input(job.get("input", {}))
     job_id = job.get("id", str(uuid.uuid4()))
 
-    check_server()
+    wait_for_server()
 
     image_bytes, image_width, image_height = image_source_to_png_bytes(job_input)
     input_filename = f"wan_input_{job_id}.png"
