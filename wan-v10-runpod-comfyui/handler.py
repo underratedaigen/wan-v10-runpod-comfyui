@@ -11,7 +11,7 @@ from typing import Any
 
 import requests
 import runpod
-from PIL import Image, ImageOps
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from runpod.serverless.utils import rp_upload
 
 from workflow_builder import build_workflow, coerce_seed, resolve_generation_dimensions
@@ -28,9 +28,23 @@ COMFY_STARTUP_POLL_INTERVAL_S = float(os.environ.get("COMFY_STARTUP_POLL_INTERVA
 WORKFLOW_TEMPLATE = Path("/workflow_templates/wan_v10_i2v.json")
 COMFY_OUTPUT_DIR = Path("/comfyui/output")
 COMFY_TEMP_DIR = Path("/comfyui/temp")
+DEFAULT_FRAMING_MODE = os.environ.get("WAN_DEFAULT_FRAMING_MODE", "keep_head_in_frame").strip().lower()
+DEFAULT_SUBJECT_SCALE = float(os.environ.get("WAN_DEFAULT_SUBJECT_SCALE", "0.88"))
+DEFAULT_VERTICAL_BIAS = float(os.environ.get("WAN_DEFAULT_VERTICAL_BIAS", "0.06"))
+DEFAULT_BG_BLUR_RADIUS = float(os.environ.get("WAN_DEFAULT_BG_BLUR_RADIUS", "28"))
+DEFAULT_BG_DARKEN = float(os.environ.get("WAN_DEFAULT_BG_DARKEN", "0.9"))
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
+FRAMING_POSITIVE_SUFFIX = (
+    " Keep the subject fully in frame, with the head and hair fully visible at all times,"
+    " stable portrait composition, ample headroom, gentle camera movement, and no aggressive push-in."
+)
+FRAMING_NEGATIVE_SUFFIX = (
+    " cropped head, cut off forehead, cut off chin, face out of frame, hair out of frame,"
+    " extreme close-up, sudden zoom-in, unstable framing, off-center face, cropped portrait"
+)
+RESAMPLING_LANCZOS = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
 
 
 def comfy_url(path: str) -> str:
@@ -74,7 +88,54 @@ def strip_data_uri(data: str) -> str:
     return data
 
 
-def image_source_to_png_bytes(job_input: dict[str, Any]) -> tuple[bytes, int, int]:
+def clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+def parse_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def parse_float(value: Any, default: float) -> float:
+    if value is None:
+        return default
+    return float(value)
+
+
+def framing_mode_for(job_input: dict[str, Any]) -> str:
+    framing_mode = str(job_input.get("framing_mode", DEFAULT_FRAMING_MODE)).strip().lower()
+    if framing_mode in {"", "default"}:
+        return DEFAULT_FRAMING_MODE
+    return framing_mode
+
+
+def should_apply_framing(job_input: dict[str, Any]) -> bool:
+    framing_mode = framing_mode_for(job_input)
+    if framing_mode in {"off", "none", "disabled"}:
+        return False
+    return parse_bool(job_input.get("keep_head_in_frame"), True)
+
+
+def augment_prompt_for_framing(prompt: str, negative_prompt: str, job_input: dict[str, Any]) -> tuple[str, str]:
+    if not should_apply_framing(job_input):
+        return prompt, negative_prompt
+
+    updated_prompt = prompt.rstrip()
+    if FRAMING_POSITIVE_SUFFIX.strip() not in updated_prompt:
+        updated_prompt += FRAMING_POSITIVE_SUFFIX
+
+    updated_negative = negative_prompt.strip()
+    if FRAMING_NEGATIVE_SUFFIX not in updated_negative:
+        updated_negative = f"{updated_negative}, {FRAMING_NEGATIVE_SUFFIX}" if updated_negative else FRAMING_NEGATIVE_SUFFIX
+
+    return updated_prompt.strip(), updated_negative.strip()
+
+
+def load_source_image(job_input: dict[str, Any]) -> Image.Image:
     image_value = job_input.get("image")
     image_base64 = job_input.get("image_base64")
     image_url = job_input.get("image_url")
@@ -98,11 +159,70 @@ def image_source_to_png_bytes(job_input: dict[str, Any]) -> tuple[bytes, int, in
         raise ValueError("Provide one of 'image', 'image_base64', or 'image_url'.")
 
     with Image.open(BytesIO(raw_bytes)) as source:
-        source = ImageOps.exif_transpose(source).convert("RGB")
-        width, height = source.size
-        output = BytesIO()
-        source.save(output, format="PNG", optimize=True)
-        return output.getvalue(), width, height
+        return ImageOps.exif_transpose(source).convert("RGB")
+
+
+def feather_mask(size: tuple[int, int], blur_radius: float) -> Image.Image:
+    mask = Image.new("L", size, color=255)
+    if blur_radius <= 0:
+        return mask
+    return mask.filter(ImageFilter.GaussianBlur(radius=max(1.0, blur_radius)))
+
+
+def apply_input_framing(source: Image.Image, job_input: dict[str, Any]) -> tuple[Image.Image, dict[str, Any]]:
+    framing_mode = framing_mode_for(job_input)
+    if not should_apply_framing(job_input):
+        return source, {
+            "mode": framing_mode,
+            "enabled": False,
+            "subject_scale": 1.0,
+            "vertical_bias": 0.0,
+        }
+
+    width, height = source.size
+    subject_scale = clamp(parse_float(job_input.get("subject_scale"), DEFAULT_SUBJECT_SCALE), 0.72, 0.98)
+    vertical_bias = clamp(parse_float(job_input.get("vertical_bias"), DEFAULT_VERTICAL_BIAS), -0.2, 0.2)
+    blur_radius = clamp(parse_float(job_input.get("background_blur_radius"), DEFAULT_BG_BLUR_RADIUS), 0.0, 64.0)
+    darken = clamp(parse_float(job_input.get("background_darken"), DEFAULT_BG_DARKEN), 0.5, 1.2)
+
+    if framing_mode == "balanced":
+        subject_scale = min(0.93, max(subject_scale, 0.9))
+        vertical_bias = max(vertical_bias, 0.03)
+    elif framing_mode in {"strict", "keep_head_in_frame"}:
+        subject_scale = min(subject_scale, 0.88)
+        vertical_bias = max(vertical_bias, 0.06)
+
+    fg_width = max(16, int(round(width * subject_scale)))
+    fg_height = max(16, int(round(height * subject_scale)))
+    foreground = source.resize((fg_width, fg_height), RESAMPLING_LANCZOS)
+
+    background = source.resize((width, height), RESAMPLING_LANCZOS)
+    background = background.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    if abs(darken - 1.0) > 0.01:
+        background = ImageEnhance.Brightness(background).enhance(darken)
+
+    canvas = background.copy()
+    x = int(round((width - fg_width) / 2))
+    y = int(round((height - fg_height) / 2 + (vertical_bias * height)))
+    x = max(0, min(width - fg_width, x))
+    y = max(0, min(height - fg_height, y))
+    mask = feather_mask((fg_width, fg_height), blur_radius=max(4.0, min(fg_width, fg_height) * 0.01))
+    canvas.paste(foreground, (x, y), mask)
+
+    return canvas, {
+        "mode": framing_mode,
+        "enabled": True,
+        "subject_scale": round(subject_scale, 4),
+        "vertical_bias": round(vertical_bias, 4),
+        "background_blur_radius": round(blur_radius, 2),
+        "background_darken": round(darken, 3),
+    }
+
+
+def image_to_png_bytes(image: Image.Image) -> bytes:
+    output = BytesIO()
+    image.save(output, format="PNG", optimize=True)
+    return output.getvalue()
 
 
 def upload_input_image(image_bytes: bytes, filename: str) -> None:
@@ -253,13 +373,23 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
 
     wait_for_server()
 
-    image_bytes, image_width, image_height = image_source_to_png_bytes(job_input)
+    source_image = load_source_image(job_input)
+    image_width, image_height = source_image.size
+    prepared_image, framing_settings = apply_input_framing(source_image, job_input)
+    prepared_width, prepared_height = prepared_image.size
+    image_bytes = image_to_png_bytes(prepared_image)
     input_filename = f"wan_input_{job_id}.png"
     upload_input_image(image_bytes, input_filename)
 
+    prompt, negative_prompt = augment_prompt_for_framing(
+        prompt=str(job_input["prompt"]),
+        negative_prompt=str(job_input.get("negative_prompt", "")),
+        job_input=job_input,
+    )
+
     width, height = resolve_generation_dimensions(
-        original_width=image_width,
-        original_height=image_height,
+        original_width=prepared_width,
+        original_height=prepared_height,
         width=job_input.get("width"),
         height=job_input.get("height"),
         resolution_preset=str(
@@ -279,8 +409,8 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
                 get_default("WAN_CHECKPOINT_NAME", "wan2.2-i2v-rapid-aio-v10-nsfw.safetensors"),
             )
         ),
-        prompt=str(job_input["prompt"]),
-        negative_prompt=str(job_input.get("negative_prompt", "")),
+        prompt=prompt,
+        negative_prompt=negative_prompt,
         width=width,
         height=height,
         num_frames=job_input.get("num_frames", get_default("WAN_DEFAULT_NUM_FRAMES", "81")),
@@ -321,7 +451,13 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
     return {
         "prompt_id": prompt_id,
         "model": {"checkpoint_name": workflow["2"]["inputs"]["ckpt_name"]},
-        "input_image": {"width": image_width, "height": image_height},
+        "input_image": {
+            "width": image_width,
+            "height": image_height,
+            "prepared_width": prepared_width,
+            "prepared_height": prepared_height,
+            "framing": framing_settings,
+        },
         "generation": {
             "width": width,
             "height": height,
@@ -332,7 +468,9 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
             "sampler_name": workflow["7"]["inputs"]["sampler_name"],
             "scheduler": workflow["7"]["inputs"]["scheduler"],
             "shift": workflow["3"]["inputs"]["shift"],
-            "seed": workflow["7"]["inputs"]["seed"]
+            "seed": workflow["7"]["inputs"]["seed"],
+            "prompt": workflow["4"]["inputs"]["text"],
+            "negative_prompt": workflow["5"]["inputs"]["text"],
         },
         "videos": parsed_outputs["videos"],
         "images": parsed_outputs["images"],

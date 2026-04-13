@@ -10,6 +10,9 @@
     "sampler_name": "euler_ancestral",
     "scheduler": "beta",
     "shift": 5.0,
-    "seed": 42
+    "seed": 42,
+    "framing_mode": "keep_head_in_frame",
+    "subject_scale": 0.88,
+    "vertical_bias": 0.06
   }
 }

@@ -205,6 +205,19 @@ INDEX_HTML = """<!doctype html>
           <label>Seed
             <input name="seed" type="number" value="42">
           </label>
+          <label>Framing Mode
+            <select name="framing_mode">
+              <option value="keep_head_in_frame" selected>Keep Head In Frame</option>
+              <option value="balanced">Balanced</option>
+              <option value="off">Off</option>
+            </select>
+          </label>
+          <label>Subject Scale
+            <input name="subject_scale" type="number" min="0.72" max="0.98" step="0.01" value="0.88">
+          </label>
+          <label>Vertical Bias
+            <input name="vertical_bias" type="number" min="-0.20" max="0.20" step="0.01" value="0.06">
+          </label>
         </div>
         <button id="submit-btn" type="submit">Generate Video</button>
       </form>
@@ -403,6 +416,9 @@ def _build_runpod_input(form_data: dict[str, str], image_base64: str) -> dict:
         "scheduler": form_data["scheduler"],
         "shift": float(form_data["shift"]),
         "seed": int(form_data["seed"]),
+        "framing_mode": form_data["framing_mode"],
+        "subject_scale": float(form_data["subject_scale"]),
+        "vertical_bias": float(form_data["vertical_bias"]),
     }
 
     negative_prompt = form_data.get("negative_prompt", "").strip()
@@ -565,6 +581,9 @@ class WanTesterHandler(BaseHTTPRequestHandler):
                 "scheduler": str(payload.get("scheduler", "beta")),
                 "shift": str(payload.get("shift", "5.0")),
                 "seed": str(payload.get("seed", "42")),
+                "framing_mode": str(payload.get("framing_mode", "keep_head_in_frame")),
+                "subject_scale": str(payload.get("subject_scale", "0.88")),
+                "vertical_bias": str(payload.get("vertical_bias", "0.06")),
             }
 
             runpod_input = _build_runpod_input(form_data, image_data_url)
