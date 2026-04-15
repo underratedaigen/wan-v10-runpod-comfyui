@@ -15,6 +15,9 @@ from pathlib import Path
 HOST = "127.0.0.1"
 PORT = 7862
 POLL_INTERVAL_SECONDS = 5
+MAX_TRANSIENT_STATUS_ERRORS = 12
+MAX_STATUS_RETRY_DELAY_SECONDS = 30
+TRANSIENT_STATUS_HTTP_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 OUTPUT_DIR = Path(__file__).resolve().parent / "local_test_outputs"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
@@ -207,16 +210,24 @@ INDEX_HTML = """<!doctype html>
           </label>
           <label>Framing Mode
             <select name="framing_mode">
-              <option value="keep_head_in_frame" selected>Keep Head In Frame</option>
+              <option value="strict" selected>Strict</option>
+              <option value="keep_head_in_frame">Keep Head In Frame</option>
               <option value="balanced">Balanced</option>
               <option value="off">Off</option>
             </select>
           </label>
+          <label>Camera Motion
+            <select name="camera_motion_mode">
+              <option value="locked" selected>Locked</option>
+              <option value="gentle">Gentle</option>
+              <option value="off">Off</option>
+            </select>
+          </label>
           <label>Subject Scale
-            <input name="subject_scale" type="number" min="0.72" max="0.98" step="0.01" value="0.88">
+            <input name="subject_scale" type="number" min="0.72" max="0.98" step="0.01" value="0.84">
           </label>
           <label>Vertical Bias
-            <input name="vertical_bias" type="number" min="-0.20" max="0.20" step="0.01" value="0.06">
+            <input name="vertical_bias" type="number" min="-0.20" max="0.20" step="0.01" value="0.08">
           </label>
         </div>
         <button id="submit-btn" type="submit">Generate Video</button>
@@ -417,6 +428,7 @@ def _build_runpod_input(form_data: dict[str, str], image_base64: str) -> dict:
         "shift": float(form_data["shift"]),
         "seed": int(form_data["seed"]),
         "framing_mode": form_data["framing_mode"],
+        "camera_motion_mode": form_data["camera_motion_mode"],
         "subject_scale": float(form_data["subject_scale"]),
         "vertical_bias": float(form_data["vertical_bias"]),
     }
@@ -428,32 +440,150 @@ def _build_runpod_input(form_data: dict[str, str], image_base64: str) -> dict:
     return payload
 
 
+def _read_http_error_details(exc: urllib.error.HTTPError) -> str:
+    details = exc.read().decode("utf-8", errors="replace").strip()
+    return details or str(exc)
+
+
+def _is_transient_status_http_error(exc: urllib.error.HTTPError) -> bool:
+    return exc.code in TRANSIENT_STATUS_HTTP_CODES
+
+
+def _set_transient_status_error(
+    local_job_id: str,
+    *,
+    remote_job_id: str,
+    remote_status: str,
+    error_text: str,
+    retry_count: int,
+    retry_delay_seconds: int,
+) -> None:
+    _set_job(
+        local_job_id,
+        state="RUNNING",
+        message=(
+            f"Runpod status check failed temporarily and will retry in "
+            f"{retry_delay_seconds}s ({retry_count}/{MAX_TRANSIENT_STATUS_ERRORS}). Last error: {error_text}"
+        ),
+        remote_job_id=remote_job_id,
+        remote_status=remote_status,
+        raw={
+            "error": error_text,
+            "transient_status_error": True,
+            "retry_count": retry_count,
+            "retry_delay_seconds": retry_delay_seconds,
+        },
+    )
+
+
 def _process_job(local_job_id: str, endpoint_id: str, api_key: str, runpod_input: dict) -> None:
     headers = {"Authorization": f"Bearer {api_key}"}
+    remote_job_id = ""
+    remote_status = "PENDING"
+    consecutive_status_errors = 0
+
     try:
         submit_url = f"https://api.runpod.ai/v2/{endpoint_id}/run"
         submit_response = _http_json("POST", submit_url, headers=headers, body={"input": runpod_input})
-        remote_job_id = submit_response.get("id")
+        remote_job_id = str(submit_response.get("id") or "")
         if not remote_job_id:
             raise ValueError(f"Runpod response missing job id: {submit_response}")
+        remote_status = str(submit_response.get("status", "IN_QUEUE"))
 
         _set_job(
             local_job_id,
             state="SUBMITTED",
             message="Job accepted by Runpod.",
             remote_job_id=remote_job_id,
-            remote_status=submit_response.get("status", "IN_QUEUE"),
+            remote_status=remote_status,
             raw=submit_response,
         )
 
         status_url = f"https://api.runpod.ai/v2/{endpoint_id}/status/{remote_job_id}"
         while True:
-            status_response = _http_json("GET", status_url, headers=headers)
+            try:
+                status_response = _http_json("GET", status_url, headers=headers)
+            except urllib.error.HTTPError as exc:
+                error_text = f"HTTP {exc.code}: {_read_http_error_details(exc)}"
+                if not _is_transient_status_http_error(exc):
+                    raise
+
+                consecutive_status_errors += 1
+                if consecutive_status_errors > MAX_TRANSIENT_STATUS_ERRORS:
+                    _set_job(
+                        local_job_id,
+                        state="FAILED",
+                        message=(
+                            "Runpod status checks kept failing after "
+                            f"{MAX_TRANSIENT_STATUS_ERRORS} retries. Last error: {error_text}"
+                        ),
+                        remote_job_id=remote_job_id,
+                        remote_status=remote_status,
+                        raw={
+                            "error": error_text,
+                            "transient_status_error": True,
+                            "retry_count": consecutive_status_errors,
+                        },
+                    )
+                    return
+
+                retry_delay_seconds = min(
+                    POLL_INTERVAL_SECONDS * consecutive_status_errors,
+                    MAX_STATUS_RETRY_DELAY_SECONDS,
+                )
+                _set_transient_status_error(
+                    local_job_id,
+                    remote_job_id=remote_job_id,
+                    remote_status=remote_status,
+                    error_text=error_text,
+                    retry_count=consecutive_status_errors,
+                    retry_delay_seconds=retry_delay_seconds,
+                )
+                time.sleep(retry_delay_seconds)
+                continue
+            except urllib.error.URLError as exc:
+                consecutive_status_errors += 1
+                error_text = f"Status poll error: {exc.reason}"
+                if consecutive_status_errors > MAX_TRANSIENT_STATUS_ERRORS:
+                    _set_job(
+                        local_job_id,
+                        state="FAILED",
+                        message=(
+                            "Runpod status checks kept failing after "
+                            f"{MAX_TRANSIENT_STATUS_ERRORS} retries. Last error: {error_text}"
+                        ),
+                        remote_job_id=remote_job_id,
+                        remote_status=remote_status,
+                        raw={
+                            "error": error_text,
+                            "transient_status_error": True,
+                            "retry_count": consecutive_status_errors,
+                        },
+                    )
+                    return
+
+                retry_delay_seconds = min(
+                    POLL_INTERVAL_SECONDS * consecutive_status_errors,
+                    MAX_STATUS_RETRY_DELAY_SECONDS,
+                )
+                _set_transient_status_error(
+                    local_job_id,
+                    remote_job_id=remote_job_id,
+                    remote_status=remote_status,
+                    error_text=error_text,
+                    retry_count=consecutive_status_errors,
+                    retry_delay_seconds=retry_delay_seconds,
+                )
+                time.sleep(retry_delay_seconds)
+                continue
+
+            consecutive_status_errors = 0
             remote_status = str(status_response.get("status", "UNKNOWN"))
             _set_job(
                 local_job_id,
                 state="RUNNING" if remote_status not in {"COMPLETED", "FAILED", "CANCELLED", "TIMED_OUT"} else remote_status,
                 message="Waiting for Runpod to finish the job.",
+                remote_job_id=remote_job_id,
                 remote_status=remote_status,
                 raw=status_response,
             )
@@ -479,6 +609,7 @@ def _process_job(local_job_id: str, endpoint_id: str, api_key: str, runpod_input
                     local_job_id,
                     state="COMPLETED",
                     message="Video generation finished.",
+                    remote_job_id=remote_job_id,
                     remote_status=remote_status,
                     raw=status_response,
                     result=result,
@@ -491,6 +622,7 @@ def _process_job(local_job_id: str, endpoint_id: str, api_key: str, runpod_input
                     local_job_id,
                     state="FAILED",
                     message=str(error_text),
+                    remote_job_id=remote_job_id,
                     remote_status=remote_status,
                     raw=status_response,
                 )
@@ -498,10 +630,24 @@ def _process_job(local_job_id: str, endpoint_id: str, api_key: str, runpod_input
 
             time.sleep(POLL_INTERVAL_SECONDS)
     except urllib.error.HTTPError as exc:
-        details = exc.read().decode("utf-8", errors="replace")
-        _set_job(local_job_id, state="FAILED", message=f"HTTP {exc.code}: {details}", raw={"error": details})
+        details = _read_http_error_details(exc)
+        _set_job(
+            local_job_id,
+            state="FAILED",
+            message=f"HTTP {exc.code}: {details}",
+            remote_job_id=remote_job_id,
+            remote_status=remote_status,
+            raw={"error": details},
+        )
     except Exception as exc:  # noqa: BLE001
-        _set_job(local_job_id, state="FAILED", message=str(exc), raw={"error": str(exc)})
+        _set_job(
+            local_job_id,
+            state="FAILED",
+            message=str(exc),
+            remote_job_id=remote_job_id,
+            remote_status=remote_status,
+            raw={"error": str(exc)},
+        )
 
 
 class WanTesterHandler(BaseHTTPRequestHandler):
@@ -581,9 +727,10 @@ class WanTesterHandler(BaseHTTPRequestHandler):
                 "scheduler": str(payload.get("scheduler", "beta")),
                 "shift": str(payload.get("shift", "5.0")),
                 "seed": str(payload.get("seed", "42")),
-                "framing_mode": str(payload.get("framing_mode", "keep_head_in_frame")),
-                "subject_scale": str(payload.get("subject_scale", "0.88")),
-                "vertical_bias": str(payload.get("vertical_bias", "0.06")),
+                "framing_mode": str(payload.get("framing_mode", "strict")),
+                "camera_motion_mode": str(payload.get("camera_motion_mode", "locked")),
+                "subject_scale": str(payload.get("subject_scale", "0.84")),
+                "vertical_bias": str(payload.get("vertical_bias", "0.08")),
             }
 
             runpod_input = _build_runpod_input(form_data, image_data_url)

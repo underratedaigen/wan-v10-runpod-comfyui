@@ -28,9 +28,10 @@ COMFY_STARTUP_POLL_INTERVAL_S = float(os.environ.get("COMFY_STARTUP_POLL_INTERVA
 WORKFLOW_TEMPLATE = Path("/workflow_templates/wan_v10_i2v.json")
 COMFY_OUTPUT_DIR = Path("/comfyui/output")
 COMFY_TEMP_DIR = Path("/comfyui/temp")
-DEFAULT_FRAMING_MODE = os.environ.get("WAN_DEFAULT_FRAMING_MODE", "keep_head_in_frame").strip().lower()
-DEFAULT_SUBJECT_SCALE = float(os.environ.get("WAN_DEFAULT_SUBJECT_SCALE", "0.88"))
-DEFAULT_VERTICAL_BIAS = float(os.environ.get("WAN_DEFAULT_VERTICAL_BIAS", "0.06"))
+DEFAULT_FRAMING_MODE = os.environ.get("WAN_DEFAULT_FRAMING_MODE", "strict").strip().lower()
+DEFAULT_CAMERA_MOTION_MODE = os.environ.get("WAN_DEFAULT_CAMERA_MOTION_MODE", "locked").strip().lower()
+DEFAULT_SUBJECT_SCALE = float(os.environ.get("WAN_DEFAULT_SUBJECT_SCALE", "0.84"))
+DEFAULT_VERTICAL_BIAS = float(os.environ.get("WAN_DEFAULT_VERTICAL_BIAS", "0.08"))
 DEFAULT_BG_BLUR_RADIUS = float(os.environ.get("WAN_DEFAULT_BG_BLUR_RADIUS", "28"))
 DEFAULT_BG_DARKEN = float(os.environ.get("WAN_DEFAULT_BG_DARKEN", "0.9"))
 
@@ -43,6 +44,21 @@ FRAMING_POSITIVE_SUFFIX = (
 FRAMING_NEGATIVE_SUFFIX = (
     " cropped head, cut off forehead, cut off chin, face out of frame, hair out of frame,"
     " extreme close-up, sudden zoom-in, unstable framing, off-center face, cropped portrait"
+)
+LOCKED_CAMERA_POSITIVE_SUFFIX = (
+    " Use a locked camera with fixed framing and consistent subject size in every frame."
+    " No push-in, no zoom, no dolly-in, no crash zoom, and no creeping tighter composition."
+)
+LOCKED_CAMERA_NEGATIVE_SUFFIX = (
+    " zoom in, push-in, dolly-in, crash zoom, camera creep, tighter framing over time,"
+    " changing focal length, progressive close-up, camera moves toward subject"
+)
+GENTLE_CAMERA_POSITIVE_SUFFIX = (
+    " Keep camera motion minimal and preserve nearly fixed framing,"
+    " with no unrequested zoom or push-in."
+)
+GENTLE_CAMERA_NEGATIVE_SUFFIX = (
+    " unrequested zoom in, unrequested push-in, sudden dolly-in, crash zoom"
 )
 RESAMPLING_LANCZOS = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
 
@@ -113,6 +129,15 @@ def framing_mode_for(job_input: dict[str, Any]) -> str:
     return framing_mode
 
 
+def camera_motion_mode_for(job_input: dict[str, Any]) -> str:
+    camera_motion_mode = str(
+        job_input.get("camera_motion_mode", DEFAULT_CAMERA_MOTION_MODE)
+    ).strip().lower()
+    if camera_motion_mode in {"", "default"}:
+        return DEFAULT_CAMERA_MOTION_MODE
+    return camera_motion_mode
+
+
 def should_apply_framing(job_input: dict[str, Any]) -> bool:
     framing_mode = framing_mode_for(job_input)
     if framing_mode in {"off", "none", "disabled"}:
@@ -121,16 +146,38 @@ def should_apply_framing(job_input: dict[str, Any]) -> bool:
 
 
 def augment_prompt_for_framing(prompt: str, negative_prompt: str, job_input: dict[str, Any]) -> tuple[str, str]:
-    if not should_apply_framing(job_input):
-        return prompt, negative_prompt
-
     updated_prompt = prompt.rstrip()
-    if FRAMING_POSITIVE_SUFFIX.strip() not in updated_prompt:
-        updated_prompt += FRAMING_POSITIVE_SUFFIX
-
     updated_negative = negative_prompt.strip()
-    if FRAMING_NEGATIVE_SUFFIX not in updated_negative:
-        updated_negative = f"{updated_negative}, {FRAMING_NEGATIVE_SUFFIX}" if updated_negative else FRAMING_NEGATIVE_SUFFIX
+
+    if should_apply_framing(job_input):
+        if FRAMING_POSITIVE_SUFFIX.strip() not in updated_prompt:
+            updated_prompt += FRAMING_POSITIVE_SUFFIX
+        if FRAMING_NEGATIVE_SUFFIX not in updated_negative:
+            updated_negative = (
+                f"{updated_negative}, {FRAMING_NEGATIVE_SUFFIX}"
+                if updated_negative
+                else FRAMING_NEGATIVE_SUFFIX
+            )
+
+    camera_motion_mode = camera_motion_mode_for(job_input)
+    if camera_motion_mode == "locked":
+        if LOCKED_CAMERA_POSITIVE_SUFFIX.strip() not in updated_prompt:
+            updated_prompt += LOCKED_CAMERA_POSITIVE_SUFFIX
+        if LOCKED_CAMERA_NEGATIVE_SUFFIX not in updated_negative:
+            updated_negative = (
+                f"{updated_negative}, {LOCKED_CAMERA_NEGATIVE_SUFFIX}"
+                if updated_negative
+                else LOCKED_CAMERA_NEGATIVE_SUFFIX
+            )
+    elif camera_motion_mode in {"gentle", "balanced"}:
+        if GENTLE_CAMERA_POSITIVE_SUFFIX.strip() not in updated_prompt:
+            updated_prompt += GENTLE_CAMERA_POSITIVE_SUFFIX
+        if GENTLE_CAMERA_NEGATIVE_SUFFIX not in updated_negative:
+            updated_negative = (
+                f"{updated_negative}, {GENTLE_CAMERA_NEGATIVE_SUFFIX}"
+                if updated_negative
+                else GENTLE_CAMERA_NEGATIVE_SUFFIX
+            )
 
     return updated_prompt.strip(), updated_negative.strip()
 
@@ -171,9 +218,11 @@ def feather_mask(size: tuple[int, int], blur_radius: float) -> Image.Image:
 
 def apply_input_framing(source: Image.Image, job_input: dict[str, Any]) -> tuple[Image.Image, dict[str, Any]]:
     framing_mode = framing_mode_for(job_input)
+    camera_motion_mode = camera_motion_mode_for(job_input)
     if not should_apply_framing(job_input):
         return source, {
             "mode": framing_mode,
+            "camera_motion_mode": camera_motion_mode,
             "enabled": False,
             "subject_scale": 1.0,
             "vertical_bias": 0.0,
@@ -191,6 +240,13 @@ def apply_input_framing(source: Image.Image, job_input: dict[str, Any]) -> tuple
     elif framing_mode in {"strict", "keep_head_in_frame"}:
         subject_scale = min(subject_scale, 0.88)
         vertical_bias = max(vertical_bias, 0.06)
+
+    if camera_motion_mode == "locked":
+        subject_scale = min(subject_scale, 0.84)
+        vertical_bias = max(vertical_bias, 0.08)
+    elif camera_motion_mode in {"gentle", "balanced"}:
+        subject_scale = min(subject_scale, 0.86)
+        vertical_bias = max(vertical_bias, 0.07)
 
     fg_width = max(16, int(round(width * subject_scale)))
     fg_height = max(16, int(round(height * subject_scale)))
@@ -211,6 +267,7 @@ def apply_input_framing(source: Image.Image, job_input: dict[str, Any]) -> tuple
 
     return canvas, {
         "mode": framing_mode,
+        "camera_motion_mode": camera_motion_mode,
         "enabled": True,
         "subject_scale": round(subject_scale, 4),
         "vertical_bias": round(vertical_bias, 4),

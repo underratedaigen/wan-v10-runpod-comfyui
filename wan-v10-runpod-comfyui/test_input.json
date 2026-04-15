@@ -11,8 +11,9 @@
     "scheduler": "beta",
     "shift": 5.0,
     "seed": 42,
-    "framing_mode": "keep_head_in_frame",
-    "subject_scale": 0.88,
-    "vertical_bias": 0.06
+    "framing_mode": "strict",
+    "camera_motion_mode": "locked",
+    "subject_scale": 0.84,
+    "vertical_bias": 0.08
   }
 }
