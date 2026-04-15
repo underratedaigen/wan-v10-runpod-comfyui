@@ -2,6 +2,7 @@ import base64
 import logging
 import mimetypes
 import os
+import statistics
 import tempfile
 import time
 import uuid
@@ -35,6 +36,12 @@ DEFAULT_VERTICAL_BIAS = float(os.environ.get("WAN_DEFAULT_VERTICAL_BIAS", "0.0")
 DEFAULT_BG_BLUR_RADIUS = float(os.environ.get("WAN_DEFAULT_BG_BLUR_RADIUS", "10"))
 DEFAULT_BG_DARKEN = float(os.environ.get("WAN_DEFAULT_BG_DARKEN", "0.96"))
 DEFAULT_FOREGROUND_SHARPNESS = float(os.environ.get("WAN_DEFAULT_FOREGROUND_SHARPNESS", "1.15"))
+DEFAULT_TRIM_INSET_FRAME = os.environ.get("WAN_DEFAULT_TRIM_INSET_FRAME", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
@@ -149,6 +156,10 @@ def parse_float(value: Any, default: float) -> float:
     return float(value)
 
 
+def should_trim_inset_frame(job_input: dict[str, Any]) -> bool:
+    return parse_bool(job_input.get("trim_inset_frame"), DEFAULT_TRIM_INSET_FRAME)
+
+
 def framing_mode_for(job_input: dict[str, Any]) -> str:
     framing_mode = str(job_input.get("framing_mode", DEFAULT_FRAMING_MODE)).strip().lower()
     if framing_mode in {"", "default"}:
@@ -252,6 +263,118 @@ def load_source_image(job_input: dict[str, Any]) -> Image.Image:
 
     with Image.open(BytesIO(raw_bytes)) as source:
         return ImageOps.exif_transpose(source).convert("RGB")
+
+
+def _downscale_for_analysis(image: Image.Image, max_side: int = 512) -> tuple[Image.Image, float]:
+    width, height = image.size
+    scale = min(1.0, max_side / max(width, height))
+    if scale >= 0.999:
+        return image, 1.0
+    resized = image.resize(
+        (
+            max(64, int(round(width * scale))),
+            max(64, int(round(height * scale))),
+        ),
+        RESAMPLING_LANCZOS,
+    )
+    return resized, scale
+
+
+def _edge_profile(gray: Image.Image, axis: str) -> list[float]:
+    width, height = gray.size
+    pixels = gray.load()
+    profile: list[float] = []
+
+    if axis == "x":
+        for x in range(width - 1):
+            total = 0
+            for y in range(height):
+                total += abs(pixels[x + 1, y] - pixels[x, y])
+            profile.append(total / max(1, height))
+    else:
+        for y in range(height - 1):
+            total = 0
+            for x in range(width):
+                total += abs(pixels[x, y + 1] - pixels[x, y])
+            profile.append(total / max(1, width))
+
+    return profile
+
+
+def _peak_in_window(profile: list[float], start_ratio: float, end_ratio: float) -> tuple[int, float]:
+    if not profile:
+        return 0, 0.0
+    count = len(profile)
+    start = max(0, min(count - 1, int(round(count * start_ratio))))
+    end = max(start + 1, min(count, int(round(count * end_ratio))))
+    window = profile[start:end]
+    peak_offset, peak_value = max(enumerate(window), key=lambda item: item[1])
+    return start + peak_offset, peak_value
+
+
+def maybe_trim_inset_frame(source: Image.Image, job_input: dict[str, Any]) -> tuple[Image.Image, dict[str, Any]]:
+    if not should_trim_inset_frame(job_input):
+        return source, {"enabled": False, "trimmed": False}
+
+    analysis_image, scale = _downscale_for_analysis(source)
+    gray = ImageOps.grayscale(analysis_image)
+    vertical_profile = _edge_profile(gray, "x")
+    horizontal_profile = _edge_profile(gray, "y")
+
+    if not vertical_profile or not horizontal_profile:
+        return source, {"enabled": True, "trimmed": False}
+
+    vertical_baseline = max(1.0, statistics.median(vertical_profile))
+    horizontal_baseline = max(1.0, statistics.median(horizontal_profile))
+
+    left_idx, left_strength = _peak_in_window(vertical_profile, 0.04, 0.38)
+    right_idx, right_strength = _peak_in_window(vertical_profile, 0.62, 0.96)
+    top_idx, top_strength = _peak_in_window(horizontal_profile, 0.04, 0.38)
+    bottom_idx, bottom_strength = _peak_in_window(horizontal_profile, 0.62, 0.96)
+
+    width_small, height_small = analysis_image.size
+    crop_width_ratio = (right_idx - left_idx) / max(1, width_small)
+    crop_height_ratio = (bottom_idx - top_idx) / max(1, height_small)
+    left_margin_ratio = left_idx / max(1, width_small)
+    top_margin_ratio = top_idx / max(1, height_small)
+
+    strong_vertical = left_strength >= vertical_baseline * 2.5 and right_strength >= vertical_baseline * 2.5
+    strong_horizontal = top_strength >= horizontal_baseline * 2.5 and bottom_strength >= horizontal_baseline * 2.5
+    plausible_box = (
+        0.45 <= crop_width_ratio <= 0.94
+        and 0.45 <= crop_height_ratio <= 0.96
+        and 0.04 <= left_margin_ratio <= 0.35
+        and 0.04 <= top_margin_ratio <= 0.35
+    )
+
+    if not (strong_vertical and strong_horizontal and plausible_box):
+        return source, {
+            "enabled": True,
+            "trimmed": False,
+            "analysis_scale": round(scale, 4),
+            "detected_box_strength": {
+                "left": round(left_strength, 2),
+                "right": round(right_strength, 2),
+                "top": round(top_strength, 2),
+                "bottom": round(bottom_strength, 2),
+            },
+        }
+
+    left = max(0, int(round(left_idx / max(scale, 1e-6))))
+    right = min(source.size[0], int(round((right_idx + 1) / max(scale, 1e-6))))
+    top = max(0, int(round(top_idx / max(scale, 1e-6))))
+    bottom = min(source.size[1], int(round((bottom_idx + 1) / max(scale, 1e-6))))
+
+    if right - left < source.size[0] * 0.4 or bottom - top < source.size[1] * 0.4:
+        return source, {"enabled": True, "trimmed": False}
+
+    trimmed = source.crop((left, top, right, bottom))
+    return trimmed, {
+        "enabled": True,
+        "trimmed": True,
+        "box": {"left": left, "top": top, "right": right, "bottom": bottom},
+        "analysis_scale": round(scale, 4),
+    }
 
 
 def feather_mask(size: tuple[int, int], blur_radius: float) -> Image.Image:
@@ -491,6 +614,8 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
     wait_for_server()
 
     source_image = load_source_image(job_input)
+    original_image_width, original_image_height = source_image.size
+    source_image, inset_trim = maybe_trim_inset_frame(source_image, job_input)
     image_width, image_height = source_image.size
     prepared_image, framing_settings = apply_input_framing(source_image, job_input)
     prepared_width, prepared_height = prepared_image.size
@@ -569,10 +694,13 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
         "prompt_id": prompt_id,
         "model": {"checkpoint_name": workflow["2"]["inputs"]["ckpt_name"]},
         "input_image": {
+            "original_width": original_image_width,
+            "original_height": original_image_height,
             "width": image_width,
             "height": image_height,
             "prepared_width": prepared_width,
             "prepared_height": prepared_height,
+            "inset_trim": inset_trim,
             "framing": framing_settings,
         },
         "generation": {

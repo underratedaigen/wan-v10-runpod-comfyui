@@ -144,6 +144,7 @@ WAN_DEFAULT_VERTICAL_BIAS=0.0
 WAN_DEFAULT_BG_BLUR_RADIUS=10
 WAN_DEFAULT_BG_DARKEN=0.96
 WAN_DEFAULT_FOREGROUND_SHARPNESS=1.15
+WAN_DEFAULT_TRIM_INSET_FRAME=true
 COMFY_LOG_LEVEL=INFO
 COMFY_HISTORY_TIMEOUT_S=3600
 COMFY_POLL_INTERVAL_S=5
@@ -180,6 +181,7 @@ curl -X POST "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/runsync" \
 - width and height are rounded to multiples of `16`
 - frame counts are rounded up to the nearest valid WAN length (`4n + 1`)
 - anti-zoom framing is now off by default so the input image is passed through more directly and the opening frame stays cleaner
+- inset-frame trimming is now on by default, so screenshot-style uploads with a sharp center image over a blurred background will be auto-cropped before generation when the border is detected confidently
 - if you want the old behavior back for a specific request, turn `framing_mode` and `camera_motion_mode` on explicitly
 - the worker uses a fixed internal graph so the public API stays simple
 
