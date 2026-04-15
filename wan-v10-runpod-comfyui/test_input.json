@@ -11,6 +11,7 @@
     "scheduler": "beta",
     "shift": 5.0,
     "seed": 42,
+    "preserve_source_dimensions": true,
     "framing_mode": "off",
     "camera_motion_mode": "off",
     "subject_scale": 1.0,

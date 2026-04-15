@@ -15,7 +15,7 @@ import runpod
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from runpod.serverless.utils import rp_upload
 
-from workflow_builder import build_workflow, coerce_seed, resolve_generation_dimensions
+from workflow_builder import build_workflow, coerce_seed, resolve_generation_dimensions, round_to_multiple
 
 
 logging.basicConfig(level=logging.INFO)
@@ -42,6 +42,9 @@ DEFAULT_TRIM_INSET_FRAME = os.environ.get("WAN_DEFAULT_TRIM_INSET_FRAME", "true"
     "yes",
     "on",
 }
+DEFAULT_PRESERVE_SOURCE_DIMENSIONS = os.environ.get(
+    "WAN_DEFAULT_PRESERVE_SOURCE_DIMENSIONS", "true"
+).strip().lower() in {"1", "true", "yes", "on"}
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
@@ -158,6 +161,13 @@ def parse_float(value: Any, default: float) -> float:
 
 def should_trim_inset_frame(job_input: dict[str, Any]) -> bool:
     return parse_bool(job_input.get("trim_inset_frame"), DEFAULT_TRIM_INSET_FRAME)
+
+
+def should_preserve_source_dimensions(job_input: dict[str, Any]) -> bool:
+    return parse_bool(
+        job_input.get("preserve_source_dimensions"),
+        DEFAULT_PRESERVE_SOURCE_DIMENSIONS,
+    )
 
 
 def framing_mode_for(job_input: dict[str, Any]) -> str:
@@ -641,6 +651,13 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
             )
         ).strip().lower(),
     )
+    if (
+        job_input.get("width") is None
+        and job_input.get("height") is None
+        and should_preserve_source_dimensions(job_input)
+    ):
+        width = round_to_multiple(prepared_width)
+        height = round_to_multiple(prepared_height)
 
     workflow = build_workflow(
         template_path=WORKFLOW_TEMPLATE,
@@ -702,6 +719,7 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
             "prepared_height": prepared_height,
             "inset_trim": inset_trim,
             "framing": framing_settings,
+            "preserve_source_dimensions": should_preserve_source_dimensions(job_input),
         },
         "generation": {
             "width": width,

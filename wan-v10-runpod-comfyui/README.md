@@ -145,6 +145,7 @@ WAN_DEFAULT_BG_BLUR_RADIUS=10
 WAN_DEFAULT_BG_DARKEN=0.96
 WAN_DEFAULT_FOREGROUND_SHARPNESS=1.15
 WAN_DEFAULT_TRIM_INSET_FRAME=true
+WAN_DEFAULT_PRESERVE_SOURCE_DIMENSIONS=true
 COMFY_LOG_LEVEL=INFO
 COMFY_HISTORY_TIMEOUT_S=3600
 COMFY_POLL_INTERVAL_S=5
@@ -179,6 +180,7 @@ curl -X POST "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/runsync" \
 
 - `720p` and `480p` preserve the input aspect ratio instead of forcing exactly `1280x720` or `832x480`
 - width and height are rounded to multiples of `16`
+- source dimensions are now preserved by default when you do not explicitly pass `width` or `height`, which helps avoid unnecessary upscale blur on already-clean inputs
 - frame counts are rounded up to the nearest valid WAN length (`4n + 1`)
 - anti-zoom framing is now off by default so the input image is passed through more directly and the opening frame stays cleaner
 - inset-frame trimming is now on by default, so screenshot-style uploads with a sharp center image over a blurred background will be auto-cropped before generation when the border is detected confidently
