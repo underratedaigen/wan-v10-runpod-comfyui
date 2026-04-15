@@ -60,10 +60,10 @@ More controlled request:
     "scheduler": "beta",
     "shift": 5.0,
     "seed": 42,
-    "framing_mode": "strict",
-    "camera_motion_mode": "locked_hard",
-    "subject_scale": 0.78,
-    "vertical_bias": 0.10
+    "framing_mode": "off",
+    "camera_motion_mode": "off",
+    "subject_scale": 1.0,
+    "vertical_bias": 0.0
   }
 }
 ```
@@ -137,10 +137,10 @@ WAN_DEFAULT_SCHEDULER=beta
 WAN_DEFAULT_DENOISE=1.0
 WAN_DEFAULT_SHIFT=5.0
 WAN_DEFAULT_FILENAME_PREFIX=wan-v10/wan_i2v
-WAN_DEFAULT_FRAMING_MODE=strict
-WAN_DEFAULT_CAMERA_MOTION_MODE=locked_hard
-WAN_DEFAULT_SUBJECT_SCALE=0.78
-WAN_DEFAULT_VERTICAL_BIAS=0.10
+WAN_DEFAULT_FRAMING_MODE=off
+WAN_DEFAULT_CAMERA_MOTION_MODE=off
+WAN_DEFAULT_SUBJECT_SCALE=1.0
+WAN_DEFAULT_VERTICAL_BIAS=0.0
 WAN_DEFAULT_BG_BLUR_RADIUS=10
 WAN_DEFAULT_BG_DARKEN=0.96
 WAN_DEFAULT_FOREGROUND_SHARPNESS=1.15
@@ -179,9 +179,8 @@ curl -X POST "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/runsync" \
 - `720p` and `480p` preserve the input aspect ratio instead of forcing exactly `1280x720` or `832x480`
 - width and height are rounded to multiples of `16`
 - frame counts are rounded up to the nearest valid WAN length (`4n + 1`)
-- `framing_mode=strict` plus `camera_motion_mode=locked_hard` is the strongest default and is tuned to suppress unrequested zoom-ins and push-ins
-- the hard camera lock now keeps the initial frame sharper by using less forced background blur and a light foreground sharpen
-- if the framing becomes too conservative, try `camera_motion_mode=locked`, then `gentle`, or reduce `vertical_bias` toward `0.08`
+- anti-zoom framing is now off by default so the input image is passed through more directly and the opening frame stays cleaner
+- if you want the old behavior back for a specific request, turn `framing_mode` and `camera_motion_mode` on explicitly
 - the worker uses a fixed internal graph so the public API stays simple
 
 ## Sources Used

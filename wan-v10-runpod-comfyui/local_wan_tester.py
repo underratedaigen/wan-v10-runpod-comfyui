@@ -210,25 +210,25 @@ INDEX_HTML = """<!doctype html>
           </label>
           <label>Framing Mode
             <select name="framing_mode">
-              <option value="strict" selected>Strict</option>
+              <option value="off" selected>Off</option>
+              <option value="strict">Strict</option>
               <option value="keep_head_in_frame">Keep Head In Frame</option>
               <option value="balanced">Balanced</option>
-              <option value="off">Off</option>
             </select>
           </label>
           <label>Camera Motion
             <select name="camera_motion_mode">
-              <option value="locked_hard" selected>Locked Hard</option>
+              <option value="off" selected>Off</option>
+              <option value="locked_hard">Locked Hard</option>
               <option value="locked">Locked</option>
               <option value="gentle">Gentle</option>
-              <option value="off">Off</option>
             </select>
           </label>
           <label>Subject Scale
-            <input name="subject_scale" type="number" min="0.72" max="0.98" step="0.01" value="0.78">
+            <input name="subject_scale" type="number" min="0.72" max="1.00" step="0.01" value="1.0">
           </label>
           <label>Vertical Bias
-            <input name="vertical_bias" type="number" min="-0.20" max="0.20" step="0.01" value="0.10">
+            <input name="vertical_bias" type="number" min="-0.20" max="0.20" step="0.01" value="0.0">
           </label>
         </div>
         <button id="submit-btn" type="submit">Generate Video</button>
@@ -728,10 +728,10 @@ class WanTesterHandler(BaseHTTPRequestHandler):
                 "scheduler": str(payload.get("scheduler", "beta")),
                 "shift": str(payload.get("shift", "5.0")),
                 "seed": str(payload.get("seed", "42")),
-                "framing_mode": str(payload.get("framing_mode", "strict")),
-                "camera_motion_mode": str(payload.get("camera_motion_mode", "locked_hard")),
-                "subject_scale": str(payload.get("subject_scale", "0.78")),
-                "vertical_bias": str(payload.get("vertical_bias", "0.10")),
+                "framing_mode": str(payload.get("framing_mode", "off")),
+                "camera_motion_mode": str(payload.get("camera_motion_mode", "off")),
+                "subject_scale": str(payload.get("subject_scale", "1.0")),
+                "vertical_bias": str(payload.get("vertical_bias", "0.0")),
             }
 
             runpod_input = _build_runpod_input(form_data, image_data_url)
