@@ -26,12 +26,12 @@ ENV PYTHONUNBUFFERED=1 \
     COMFY_STARTUP_TIMEOUT_S=300 \
     COMFY_STARTUP_POLL_INTERVAL_S=2
 
-COPY custom_start.sh /custom_start.sh
+COPY custom_start.sh /start.sh
 COPY bootstrap_models.py /bootstrap_models.py
 COPY workflow_builder.py /workflow_builder.py
 COPY handler.py /handler.py
 COPY workflow_templates /workflow_templates
 
-RUN chmod +x /custom_start.sh
+RUN chmod +x /start.sh
 
-CMD ["/custom_start.sh"]
+CMD ["/start.sh"]

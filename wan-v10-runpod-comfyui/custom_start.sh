@@ -23,11 +23,24 @@ if [ -n "$TCMALLOC" ]; then
 fi
 
 echo "wan-v10-worker: checking GPU availability"
-python3 -c "
+if ! GPU_CHECK=$(python3 -c "
 import torch
-torch.cuda.init()
-print(torch.cuda.get_device_name(0))
-"
+try:
+    torch.cuda.init()
+    print(f'OK: {torch.cuda.get_device_name(0)}')
+except Exception as exc:
+    print(f'FAIL: {exc}')
+    raise
+" 2>&1); then
+    echo "wan-v10-worker: GPU is not available. PyTorch CUDA init failed:"
+    echo "wan-v10-worker: $GPU_CHECK"
+    exit 1
+fi
+echo "wan-v10-worker: GPU available - $GPU_CHECK"
+
+if command -v comfy-manager-set-mode >/dev/null 2>&1; then
+    comfy-manager-set-mode offline || echo "wan-v10-worker: could not set ComfyUI-Manager network_mode" >&2
+fi
 
 echo "wan-v10-worker: bootstrapping WAN checkpoint"
 python3 -u /bootstrap_models.py
