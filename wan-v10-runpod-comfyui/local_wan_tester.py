@@ -218,16 +218,17 @@ INDEX_HTML = """<!doctype html>
           </label>
           <label>Camera Motion
             <select name="camera_motion_mode">
-              <option value="locked" selected>Locked</option>
+              <option value="locked_hard" selected>Locked Hard</option>
+              <option value="locked">Locked</option>
               <option value="gentle">Gentle</option>
               <option value="off">Off</option>
             </select>
           </label>
           <label>Subject Scale
-            <input name="subject_scale" type="number" min="0.72" max="0.98" step="0.01" value="0.84">
+            <input name="subject_scale" type="number" min="0.72" max="0.98" step="0.01" value="0.78">
           </label>
           <label>Vertical Bias
-            <input name="vertical_bias" type="number" min="-0.20" max="0.20" step="0.01" value="0.08">
+            <input name="vertical_bias" type="number" min="-0.20" max="0.20" step="0.01" value="0.10">
           </label>
         </div>
         <button id="submit-btn" type="submit">Generate Video</button>
@@ -728,9 +729,9 @@ class WanTesterHandler(BaseHTTPRequestHandler):
                 "shift": str(payload.get("shift", "5.0")),
                 "seed": str(payload.get("seed", "42")),
                 "framing_mode": str(payload.get("framing_mode", "strict")),
-                "camera_motion_mode": str(payload.get("camera_motion_mode", "locked")),
-                "subject_scale": str(payload.get("subject_scale", "0.84")),
-                "vertical_bias": str(payload.get("vertical_bias", "0.08")),
+                "camera_motion_mode": str(payload.get("camera_motion_mode", "locked_hard")),
+                "subject_scale": str(payload.get("subject_scale", "0.78")),
+                "vertical_bias": str(payload.get("vertical_bias", "0.10")),
             }
 
             runpod_input = _build_runpod_input(form_data, image_data_url)

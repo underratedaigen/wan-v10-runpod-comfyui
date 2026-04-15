@@ -29,9 +29,9 @@ WORKFLOW_TEMPLATE = Path("/workflow_templates/wan_v10_i2v.json")
 COMFY_OUTPUT_DIR = Path("/comfyui/output")
 COMFY_TEMP_DIR = Path("/comfyui/temp")
 DEFAULT_FRAMING_MODE = os.environ.get("WAN_DEFAULT_FRAMING_MODE", "strict").strip().lower()
-DEFAULT_CAMERA_MOTION_MODE = os.environ.get("WAN_DEFAULT_CAMERA_MOTION_MODE", "locked").strip().lower()
-DEFAULT_SUBJECT_SCALE = float(os.environ.get("WAN_DEFAULT_SUBJECT_SCALE", "0.84"))
-DEFAULT_VERTICAL_BIAS = float(os.environ.get("WAN_DEFAULT_VERTICAL_BIAS", "0.08"))
+DEFAULT_CAMERA_MOTION_MODE = os.environ.get("WAN_DEFAULT_CAMERA_MOTION_MODE", "locked_hard").strip().lower()
+DEFAULT_SUBJECT_SCALE = float(os.environ.get("WAN_DEFAULT_SUBJECT_SCALE", "0.78"))
+DEFAULT_VERTICAL_BIAS = float(os.environ.get("WAN_DEFAULT_VERTICAL_BIAS", "0.10"))
 DEFAULT_BG_BLUR_RADIUS = float(os.environ.get("WAN_DEFAULT_BG_BLUR_RADIUS", "28"))
 DEFAULT_BG_DARKEN = float(os.environ.get("WAN_DEFAULT_BG_DARKEN", "0.9"))
 
@@ -59,6 +59,32 @@ GENTLE_CAMERA_POSITIVE_SUFFIX = (
 )
 GENTLE_CAMERA_NEGATIVE_SUFFIX = (
     " unrequested zoom in, unrequested push-in, sudden dolly-in, crash zoom"
+)
+LOCKED_HARD_CAMERA_POSITIVE_SUFFIX = (
+    " Maintain exactly the same camera distance and portrait framing across the whole clip."
+    " The subject must stay the same size from start to finish with no zoom, no push-in,"
+    " no dolly-in, no gradual tightening, and no camera drift toward the face."
+)
+LOCKED_HARD_CAMERA_NEGATIVE_SUFFIX = (
+    " zoom in, push-in, dolly-in, crash zoom, creeping zoom, tighter framing over time,"
+    " camera drift toward face, face getting larger, progressive close-up, changing subject scale,"
+    " tightening portrait crop, moving camera closer, lens breathing"
+)
+EXPLICIT_ZOOM_TERMS = (
+    "zoom",
+    "push-in",
+    "push in",
+    "dolly-in",
+    "dolly in",
+    "close-up",
+    "close up",
+    "extreme close-up",
+    "extreme close up",
+    "crash zoom",
+    "camera moves toward",
+    "camera move toward",
+    "moves toward the camera",
+    "toward the camera",
 )
 RESAMPLING_LANCZOS = Image.Resampling.LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
 
@@ -138,6 +164,11 @@ def camera_motion_mode_for(job_input: dict[str, Any]) -> str:
     return camera_motion_mode
 
 
+def prompt_requests_zoom(prompt: str) -> bool:
+    prompt_lower = prompt.lower()
+    return any(term in prompt_lower for term in EXPLICIT_ZOOM_TERMS)
+
+
 def should_apply_framing(job_input: dict[str, Any]) -> bool:
     framing_mode = framing_mode_for(job_input)
     if framing_mode in {"off", "none", "disabled"}:
@@ -148,6 +179,7 @@ def should_apply_framing(job_input: dict[str, Any]) -> bool:
 def augment_prompt_for_framing(prompt: str, negative_prompt: str, job_input: dict[str, Any]) -> tuple[str, str]:
     updated_prompt = prompt.rstrip()
     updated_negative = negative_prompt.strip()
+    explicit_zoom_requested = prompt_requests_zoom(updated_prompt)
 
     if should_apply_framing(job_input):
         if FRAMING_POSITIVE_SUFFIX.strip() not in updated_prompt:
@@ -160,7 +192,19 @@ def augment_prompt_for_framing(prompt: str, negative_prompt: str, job_input: dic
             )
 
     camera_motion_mode = camera_motion_mode_for(job_input)
-    if camera_motion_mode == "locked":
+    if explicit_zoom_requested and camera_motion_mode in {"locked", "locked_hard"}:
+        camera_motion_mode = "gentle"
+
+    if camera_motion_mode == "locked_hard":
+        if LOCKED_HARD_CAMERA_POSITIVE_SUFFIX.strip() not in updated_prompt:
+            updated_prompt += LOCKED_HARD_CAMERA_POSITIVE_SUFFIX
+        if LOCKED_HARD_CAMERA_NEGATIVE_SUFFIX not in updated_negative:
+            updated_negative = (
+                f"{updated_negative}, {LOCKED_HARD_CAMERA_NEGATIVE_SUFFIX}"
+                if updated_negative
+                else LOCKED_HARD_CAMERA_NEGATIVE_SUFFIX
+            )
+    elif camera_motion_mode == "locked":
         if LOCKED_CAMERA_POSITIVE_SUFFIX.strip() not in updated_prompt:
             updated_prompt += LOCKED_CAMERA_POSITIVE_SUFFIX
         if LOCKED_CAMERA_NEGATIVE_SUFFIX not in updated_negative:
@@ -219,10 +263,12 @@ def feather_mask(size: tuple[int, int], blur_radius: float) -> Image.Image:
 def apply_input_framing(source: Image.Image, job_input: dict[str, Any]) -> tuple[Image.Image, dict[str, Any]]:
     framing_mode = framing_mode_for(job_input)
     camera_motion_mode = camera_motion_mode_for(job_input)
+    explicit_zoom_requested = prompt_requests_zoom(str(job_input.get("prompt", "")))
     if not should_apply_framing(job_input):
         return source, {
             "mode": framing_mode,
             "camera_motion_mode": camera_motion_mode,
+            "explicit_zoom_requested": explicit_zoom_requested,
             "enabled": False,
             "subject_scale": 1.0,
             "vertical_bias": 0.0,
@@ -241,9 +287,13 @@ def apply_input_framing(source: Image.Image, job_input: dict[str, Any]) -> tuple
         subject_scale = min(subject_scale, 0.88)
         vertical_bias = max(vertical_bias, 0.06)
 
-    if camera_motion_mode == "locked":
-        subject_scale = min(subject_scale, 0.84)
-        vertical_bias = max(vertical_bias, 0.08)
+    if not explicit_zoom_requested and camera_motion_mode == "locked_hard":
+        subject_scale = min(subject_scale, 0.78)
+        vertical_bias = max(vertical_bias, 0.10)
+        blur_radius = max(blur_radius, 32.0)
+    elif not explicit_zoom_requested and camera_motion_mode == "locked":
+        subject_scale = min(subject_scale, 0.82)
+        vertical_bias = max(vertical_bias, 0.09)
     elif camera_motion_mode in {"gentle", "balanced"}:
         subject_scale = min(subject_scale, 0.86)
         vertical_bias = max(vertical_bias, 0.07)
@@ -268,6 +318,7 @@ def apply_input_framing(source: Image.Image, job_input: dict[str, Any]) -> tuple
     return canvas, {
         "mode": framing_mode,
         "camera_motion_mode": camera_motion_mode,
+        "explicit_zoom_requested": explicit_zoom_requested,
         "enabled": True,
         "subject_scale": round(subject_scale, 4),
         "vertical_bias": round(vertical_bias, 4),
