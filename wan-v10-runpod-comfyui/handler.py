@@ -32,8 +32,9 @@ DEFAULT_FRAMING_MODE = os.environ.get("WAN_DEFAULT_FRAMING_MODE", "strict").stri
 DEFAULT_CAMERA_MOTION_MODE = os.environ.get("WAN_DEFAULT_CAMERA_MOTION_MODE", "locked_hard").strip().lower()
 DEFAULT_SUBJECT_SCALE = float(os.environ.get("WAN_DEFAULT_SUBJECT_SCALE", "0.78"))
 DEFAULT_VERTICAL_BIAS = float(os.environ.get("WAN_DEFAULT_VERTICAL_BIAS", "0.10"))
-DEFAULT_BG_BLUR_RADIUS = float(os.environ.get("WAN_DEFAULT_BG_BLUR_RADIUS", "28"))
-DEFAULT_BG_DARKEN = float(os.environ.get("WAN_DEFAULT_BG_DARKEN", "0.9"))
+DEFAULT_BG_BLUR_RADIUS = float(os.environ.get("WAN_DEFAULT_BG_BLUR_RADIUS", "10"))
+DEFAULT_BG_DARKEN = float(os.environ.get("WAN_DEFAULT_BG_DARKEN", "0.96"))
+DEFAULT_FOREGROUND_SHARPNESS = float(os.environ.get("WAN_DEFAULT_FOREGROUND_SHARPNESS", "1.15"))
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
@@ -279,6 +280,11 @@ def apply_input_framing(source: Image.Image, job_input: dict[str, Any]) -> tuple
     vertical_bias = clamp(parse_float(job_input.get("vertical_bias"), DEFAULT_VERTICAL_BIAS), -0.2, 0.2)
     blur_radius = clamp(parse_float(job_input.get("background_blur_radius"), DEFAULT_BG_BLUR_RADIUS), 0.0, 64.0)
     darken = clamp(parse_float(job_input.get("background_darken"), DEFAULT_BG_DARKEN), 0.5, 1.2)
+    foreground_sharpness = clamp(
+        parse_float(job_input.get("foreground_sharpness"), DEFAULT_FOREGROUND_SHARPNESS),
+        0.5,
+        2.0,
+    )
 
     if framing_mode == "balanced":
         subject_scale = min(0.93, max(subject_scale, 0.9))
@@ -290,7 +296,7 @@ def apply_input_framing(source: Image.Image, job_input: dict[str, Any]) -> tuple
     if not explicit_zoom_requested and camera_motion_mode == "locked_hard":
         subject_scale = min(subject_scale, 0.78)
         vertical_bias = max(vertical_bias, 0.10)
-        blur_radius = max(blur_radius, 32.0)
+        blur_radius = max(blur_radius, 10.0)
     elif not explicit_zoom_requested and camera_motion_mode == "locked":
         subject_scale = min(subject_scale, 0.82)
         vertical_bias = max(vertical_bias, 0.09)
@@ -301,6 +307,8 @@ def apply_input_framing(source: Image.Image, job_input: dict[str, Any]) -> tuple
     fg_width = max(16, int(round(width * subject_scale)))
     fg_height = max(16, int(round(height * subject_scale)))
     foreground = source.resize((fg_width, fg_height), RESAMPLING_LANCZOS)
+    if abs(foreground_sharpness - 1.0) > 0.01:
+        foreground = ImageEnhance.Sharpness(foreground).enhance(foreground_sharpness)
 
     background = source.resize((width, height), RESAMPLING_LANCZOS)
     background = background.filter(ImageFilter.GaussianBlur(radius=blur_radius))
@@ -324,6 +332,7 @@ def apply_input_framing(source: Image.Image, job_input: dict[str, Any]) -> tuple
         "vertical_bias": round(vertical_bias, 4),
         "background_blur_radius": round(blur_radius, 2),
         "background_darken": round(darken, 3),
+        "foreground_sharpness": round(foreground_sharpness, 3),
     }
 
 

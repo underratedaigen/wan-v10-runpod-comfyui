@@ -141,8 +141,9 @@ WAN_DEFAULT_FRAMING_MODE=strict
 WAN_DEFAULT_CAMERA_MOTION_MODE=locked_hard
 WAN_DEFAULT_SUBJECT_SCALE=0.78
 WAN_DEFAULT_VERTICAL_BIAS=0.10
-WAN_DEFAULT_BG_BLUR_RADIUS=28
-WAN_DEFAULT_BG_DARKEN=0.9
+WAN_DEFAULT_BG_BLUR_RADIUS=10
+WAN_DEFAULT_BG_DARKEN=0.96
+WAN_DEFAULT_FOREGROUND_SHARPNESS=1.15
 COMFY_LOG_LEVEL=INFO
 COMFY_HISTORY_TIMEOUT_S=3600
 COMFY_POLL_INTERVAL_S=5
@@ -179,6 +180,7 @@ curl -X POST "https://api.runpod.ai/v2/YOUR_ENDPOINT_ID/runsync" \
 - width and height are rounded to multiples of `16`
 - frame counts are rounded up to the nearest valid WAN length (`4n + 1`)
 - `framing_mode=strict` plus `camera_motion_mode=locked_hard` is the strongest default and is tuned to suppress unrequested zoom-ins and push-ins
+- the hard camera lock now keeps the initial frame sharper by using less forced background blur and a light foreground sharpen
 - if the framing becomes too conservative, try `camera_motion_mode=locked`, then `gentle`, or reduce `vertical_bias` toward `0.08`
 - the worker uses a fixed internal graph so the public API stays simple
 
