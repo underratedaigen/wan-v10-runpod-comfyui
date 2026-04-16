@@ -16,6 +16,11 @@ def round_to_multiple(value: int, multiple: int = 16) -> int:
     return max(multiple, int(round(value / multiple) * multiple))
 
 
+def floor_to_multiple(value: int | float, multiple: int = 16) -> int:
+    value = max(multiple, int(value))
+    return max(multiple, (int(value) // multiple) * multiple)
+
+
 def normalize_frame_count(value: int | str) -> int:
     frames = max(1, int(value))
     remainder = (frames - 1) % 4
@@ -39,10 +44,37 @@ def preset_dimensions(original_width: int, original_height: int, preset: str) ->
         raise ValueError(f"Unsupported resolution_preset '{preset}'. Use one of: {', '.join(PRESET_PIXELS)}")
 
     target_pixels = PRESET_PIXELS[preset_key]
-    aspect = original_width / original_height
-    width = math.sqrt(target_pixels * aspect)
-    height = width / aspect
-    return round_to_multiple(int(width)), round_to_multiple(int(height))
+    source_pixels = max(1, int(original_width) * int(original_height))
+    scale = math.sqrt(target_pixels / source_pixels)
+    width = floor_to_multiple(original_width * scale)
+    height = floor_to_multiple(original_height * scale)
+
+    while width * height > target_pixels:
+        if width >= height:
+            width = max(16, width - 16)
+            height = floor_to_multiple(width * original_height / original_width)
+        else:
+            height = max(16, height - 16)
+            width = floor_to_multiple(height * original_width / original_height)
+
+    return width, height
+
+
+def source_dimensions_or_preset_dimensions(
+    original_width: int,
+    original_height: int,
+    preset: str,
+) -> tuple[int, int]:
+    preset_key = preset.lower()
+    if preset_key not in PRESET_PIXELS:
+        raise ValueError(f"Unsupported resolution_preset '{preset}'. Use one of: {', '.join(PRESET_PIXELS)}")
+
+    source_width = round_to_multiple(original_width)
+    source_height = round_to_multiple(original_height)
+    if source_width * source_height <= PRESET_PIXELS[preset_key]:
+        return source_width, source_height
+
+    return preset_dimensions(original_width, original_height, preset)
 
 
 def resolve_generation_dimensions(

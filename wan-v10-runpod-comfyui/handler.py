@@ -15,7 +15,12 @@ import runpod
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from runpod.serverless.utils import rp_upload
 
-from workflow_builder import build_workflow, coerce_seed, resolve_generation_dimensions, round_to_multiple
+from workflow_builder import (
+    build_workflow,
+    coerce_seed,
+    resolve_generation_dimensions,
+    source_dimensions_or_preset_dimensions,
+)
 
 
 logging.basicConfig(level=logging.INFO)
@@ -621,6 +626,12 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
     job_input = validate_input(job.get("input", {}))
     job_id = job.get("id", str(uuid.uuid4()))
     preserve_source_dimensions = should_preserve_source_dimensions(job_input)
+    resolution_preset = str(
+        job_input.get(
+            "resolution_preset",
+            get_default("WAN_DEFAULT_RESOLUTION_PRESET", "720p"),
+        )
+    ).strip().lower()
 
     wait_for_server()
 
@@ -645,25 +656,25 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
         original_height=prepared_height,
         width=job_input.get("width"),
         height=job_input.get("height"),
-        resolution_preset=str(
-            job_input.get(
-                "resolution_preset",
-                get_default("WAN_DEFAULT_RESOLUTION_PRESET", "720p"),
-            )
-        ).strip().lower(),
+        resolution_preset=resolution_preset,
     )
+    generation_strategy = "explicit_or_preset_dimensions"
     if (
         job_input.get("width") is None
         and job_input.get("height") is None
         and preserve_source_dimensions
     ):
-        width = round_to_multiple(prepared_width)
-        height = round_to_multiple(prepared_height)
+        width, height = source_dimensions_or_preset_dimensions(
+            prepared_width,
+            prepared_height,
+            resolution_preset,
+        )
+        generation_strategy = "source_aspect_ratio_capped_to_preset"
 
     LOGGER.info(
         "Input pipeline summary | original=%sx%s trimmed=%sx%s prepared=%sx%s generated=%sx%s "
-        "preserve_source_dimensions=%s trim_inset_frame=%s framing_mode=%s framing_enabled=%s "
-        "camera_motion_mode=%s",
+        "preserve_source_dimensions=%s resolution_preset=%s generation_strategy=%s "
+        "trim_inset_frame=%s framing_mode=%s framing_enabled=%s camera_motion_mode=%s",
         original_image_width,
         original_image_height,
         image_width,
@@ -673,6 +684,8 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
         width,
         height,
         preserve_source_dimensions,
+        resolution_preset,
+        generation_strategy,
         should_trim_inset_frame(job_input),
         framing_mode_for(job_input),
         framing_settings.get("enabled"),
@@ -744,6 +757,8 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
         "generation": {
             "width": width,
             "height": height,
+            "resolution_preset": resolution_preset,
+            "resolution_strategy": generation_strategy,
             "num_frames": workflow["6"]["inputs"]["length"],
             "fps": workflow["9"]["inputs"]["fps"],
             "steps": workflow["7"]["inputs"]["steps"],
