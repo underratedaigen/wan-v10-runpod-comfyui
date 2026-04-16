@@ -620,6 +620,7 @@ def validate_input(job_input: dict[str, Any]) -> dict[str, Any]:
 def handle_job(job: dict[str, Any]) -> dict[str, Any]:
     job_input = validate_input(job.get("input", {}))
     job_id = job.get("id", str(uuid.uuid4()))
+    preserve_source_dimensions = should_preserve_source_dimensions(job_input)
 
     wait_for_server()
 
@@ -654,10 +655,29 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
     if (
         job_input.get("width") is None
         and job_input.get("height") is None
-        and should_preserve_source_dimensions(job_input)
+        and preserve_source_dimensions
     ):
         width = round_to_multiple(prepared_width)
         height = round_to_multiple(prepared_height)
+
+    LOGGER.info(
+        "Input pipeline summary | original=%sx%s trimmed=%sx%s prepared=%sx%s generated=%sx%s "
+        "preserve_source_dimensions=%s trim_inset_frame=%s framing_mode=%s framing_enabled=%s "
+        "camera_motion_mode=%s",
+        original_image_width,
+        original_image_height,
+        image_width,
+        image_height,
+        prepared_width,
+        prepared_height,
+        width,
+        height,
+        preserve_source_dimensions,
+        should_trim_inset_frame(job_input),
+        framing_mode_for(job_input),
+        framing_settings.get("enabled"),
+        camera_motion_mode_for(job_input),
+    )
 
     workflow = build_workflow(
         template_path=WORKFLOW_TEMPLATE,
@@ -719,7 +739,7 @@ def handle_job(job: dict[str, Any]) -> dict[str, Any]:
             "prepared_height": prepared_height,
             "inset_trim": inset_trim,
             "framing": framing_settings,
-            "preserve_source_dimensions": should_preserve_source_dimensions(job_input),
+            "preserve_source_dimensions": preserve_source_dimensions,
         },
         "generation": {
             "width": width,
